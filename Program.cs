@@ -82,7 +82,6 @@ namespace DclConverter
             }
 
             return image;
-        
         }
 
         private byte[] DecodeLFormat(byte[] input, byte[] output)
@@ -117,70 +116,96 @@ namespace DclConverter
             return output;
         }
 
-                private byte[] DecodePFormat(byte[] input, byte[] output)
+        private byte[] DecodePFormat(byte[] input, byte[] output)
         {
-            Array.Clear(output, 0, output.Length);
+            // Initialize buffer with 255 instead of 0 to match decompiled code
+            for (int i = 0; i < output.Length; i++)
+            {
+                output[i] = 255;
+            }
+            
             int bitBuffer = 128;
             int inputPos = 2;
             int outputPos = 0;
             byte lastR = 0, lastG = 0, lastB = 0;
             
-            while (outputPos < WIDTH * HEIGHT * 3)
+            while (true)
             {
-                int runLength = 0;
-                int command = ReadBits(2, ref bitBuffer, ref inputPos, input);
+                // Process run length
+                uint runLength = 0;
+                uint command = (uint)ReadBits(2, ref bitBuffer, ref inputPos, input);
                 
                 if (command > 1)
                 {
                     if (command == 2)
                     {
-                        runLength = ReadBits(2, ref bitBuffer, ref inputPos, input) + 2;
+                        runLength = (uint)(ReadBits(2, ref bitBuffer, ref inputPos, input) + 2);
                     }
                     else
                     {
-                        int bits = 3;
+                        uint bits = 3;
                         while (ReadBit(ref bitBuffer, ref inputPos, input))
                             bits++;
 
-                        if (bits >= 24)
-                            break;
-
-                        runLength = ((1 << bits) - 1) + ReadBits(bits, ref bitBuffer, ref inputPos, input) - 1;
+                        if (bits >= 0x18) // 24 in hex
+                        {
+                            runLength = uint.MaxValue; // Signal to break out of main loop
+                        }
+                        else
+                        {
+                            runLength = (uint)((1 << (int)bits) - 1 + ReadBits((int)bits, ref bitBuffer, ref inputPos, input) - 1);
+                        }
                     }
                 }
                 else
                 {
                     runLength = command;
                 }
-
-                outputPos += runLength * 3;
-
+                
+                // Check for termination condition
+                if (runLength == uint.MaxValue)
+                    break;
+                    
+                // Advance by runLength * 3
+                outputPos += (int)runLength * 3;
+                
+                // Ensure we don't exceed the buffer
                 if (outputPos >= WIDTH * HEIGHT * 3)
                     break;
-
+                    
+                // Read RGB values
                 byte r = (byte)ReadBits(8, ref bitBuffer, ref inputPos, input);
                 byte g = (byte)ReadBits(8, ref bitBuffer, ref inputPos, input);
                 byte b = (byte)ReadBits(8, ref bitBuffer, ref inputPos, input);
-
+                
+                // Store color
                 output[outputPos] = r;
                 output[outputPos + 1] = g;
                 output[outputPos + 2] = b;
                 
+                // Save last color
                 lastR = r;
                 lastG = g;
                 lastB = b;
-
+                
+                // Process special pixel placement
                 if (ReadBit(ref bitBuffer, ref inputPos, input))
                 {
                     int currentPos = outputPos;
+                    
                     while (true)
                     {
-                        int increment;
+                        int increment = 0;
+                        bool endLoop = false;
+                        
                         switch (ReadBits(2, ref bitBuffer, ref inputPos, input))
                         {
                             case 0:
                                 if (!ReadBit(ref bitBuffer, ref inputPos, input))
-                                    goto EndLoop;
+                                {
+                                    endLoop = true;
+                                    break;
+                                }
                                 increment = ReadBit(ref bitBuffer, ref inputPos, input) ? 1926 : 1914;
                                 break;
                             case 1:
@@ -193,27 +218,34 @@ namespace DclConverter
                                 increment = 1923;
                                 break;
                             default:
-                                goto EndLoop;
+                                endLoop = true;
+                                break;
                         }
-
+                        
+                        if (endLoop)
+                            break;
+                        
                         currentPos += increment;
+                        
+                        // Check bounds
                         if (currentPos + 2 >= output.Length)
                             break;
-
+                        
+                        // Set color at new position
                         output[currentPos] = r;
                         output[currentPos + 1] = g;
                         output[currentPos + 2] = b;
                     }
-                    EndLoop:;
                 }
-
+                
+                // Move to next position
                 outputPos += 3;
             }
-
-            // Fill in any gaps with the last color
+            
+            // Fill in any gaps with the last color, checking for 255 values
             for (int i = 0; i < output.Length; i += 3)
             {
-                if (output[i] == 0 && output[i + 1] == 0 && output[i + 2] == 0)
+                if (output[i] == 255 && output[i + 1] == 255 && output[i + 2] == 255)
                 {
                     output[i] = lastR;
                     output[i + 1] = lastG;
@@ -226,9 +258,10 @@ namespace DclConverter
                     lastB = output[i + 2];
                 }
             }
-
+            
             return output;
         }
+
         private bool ReadBit(ref int bitBuffer, ref int position, byte[] input)
         {
             bool result = (input[position] & bitBuffer) != 0;
